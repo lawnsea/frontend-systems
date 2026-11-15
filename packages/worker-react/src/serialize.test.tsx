@@ -1,4 +1,4 @@
-import { isValidElement, type ReactElement } from "react";
+import { Fragment, isValidElement, type ReactElement } from "react";
 import { expect, test } from "vitest";
 import { WORKER_REF, deserializeProps, serializeProps } from "./serialize.js";
 
@@ -29,16 +29,52 @@ test("replaces elements of worker components with references", () => {
   });
 });
 
-test("rejects elements of other components and host elements", () => {
+test("describes host elements and fragments", () => {
+  expect(
+    serializeProps({
+      children: (
+        <>
+          <div className="note">
+            Shipped <strong>today</strong>
+          </div>
+          <Badge key="b" label="new" />
+        </>
+      ),
+    }),
+  ).toEqual({
+    children: {
+      $$fragment: true,
+      key: null,
+      props: {
+        children: [
+          { $$host: "div", key: null, props: { className: "note", children: ["Shipped ", { $$host: "strong", key: null, props: { children: "today" } }] } },
+          { $$worker: "src/Badge.tsx#default", key: "b", props: { label: "new" } },
+        ],
+      },
+    },
+  });
+});
+
+test("rejects elements of components that aren't 'use worker'", () => {
   function Local() {
     return null;
   }
   expect(() => serializeProps({ children: <Local /> })).toThrow(
     "props.children is a <Local> element, which can't be passed to a worker.",
   );
-  expect(() => serializeProps({ children: <Card><div /></Card> })).toThrow(
-    "props.children.<component>.props.children is a <div> element",
+  expect(() => serializeProps({ children: <Card><div><Local /></div></Card> })).toThrow(
+    "props.children.<component>.props.children.<div>.props.children is a <Local> element",
   );
+});
+
+test("rejects event handlers and refs on host elements", () => {
+  expect(() => serializeProps({ children: <button onClick={() => {}} /> })).toThrow(
+    "props.children.<button>.props.onClick is a function",
+  );
+  expect(() => serializeProps({ children: <div ref={{ current: null }} /> })).toThrow(
+    "props.children is a <div> element with a ref, which can't be passed to a worker yet.",
+  );
+  expect(() => serializeProps({ children: <div ref={() => {}} /> })).toThrow("with a ref");
 });
 
 test("rejects functions", () => {
@@ -60,4 +96,27 @@ test("rebuilds references into elements of the resolved components", () => {
   expect(rebuilt.children.props.title).toBe("x");
   expect(rebuilt.children.props.children.type).toBe(Badge);
   expect(rebuilt.children.props.children.props).toEqual({ label: "new" });
+});
+
+test("rebuilds host elements and fragments", () => {
+  const props = serializeProps({
+    children: (
+      <>
+        <div key="d" className="note">
+          Shipped <strong>today</strong>
+        </div>
+      </>
+    ),
+  });
+
+  const { children: fragment } = deserializeProps(props, () => Card) as { children: ReactElement<any> };
+
+  expect(fragment.type).toBe(Fragment);
+  const div = fragment.props.children as ReactElement<any>;
+  expect(div.type).toBe("div");
+  expect(div.key).toBe("d");
+  expect(div.props.className).toBe("note");
+  expect(div.props.children[0]).toBe("Shipped ");
+  expect(div.props.children[1].type).toBe("strong");
+  expect(div.props.children[1].props.children).toBe("today");
 });

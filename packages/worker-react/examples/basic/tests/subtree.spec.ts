@@ -17,6 +17,15 @@ test("renders 'use worker' children in the same worker", async ({ page }) => {
   await expect(page.locator("[data-worker-subtree]")).toHaveCount(1);
 });
 
+test("renders host elements passed as children in the worker", async ({ page }) => {
+  const note = page.locator(`${GREETING} .children .note`);
+  await expect(note).toHaveText("Passed from the host as 0 elements");
+  await expect(note.locator("strong")).toHaveText("0");
+
+  await page.getByRole("button", { name: "Increment host count" }).click();
+  await expect(note.locator("strong")).toHaveText("1");
+});
+
 test("renders one copy of the subtree under StrictMode", async ({ page }) => {
   await expect(page.locator(`${GREETING} .greeting`)).toHaveCount(1);
   await expect(page.locator(`${GREETING} > div`)).toHaveCount(1);

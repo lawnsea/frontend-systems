@@ -25,6 +25,7 @@ import Badge from "./Badge"; // also "use worker"
 
 <Greeting name={name}>
   <Badge label="new" />
+  <p className="note">Shipped <strong>today</strong></p>
 </Greeting>;
 ```
 
@@ -51,7 +52,8 @@ The plugin:
 What the host passes to a `'use worker'` component crosses to the worker, so:
 
 - **Props must be JSON-serializable.** `Date`s become strings, and `undefined` values are dropped. A function prop throws. Callback props are [#33](https://github.com/lawnsea/frontend-systems/issues/33).
-- **Elements must be of `'use worker'` components.** That includes `children`. An element of any other component, or a host element like `<div>`, throws.
+- **Elements must be host elements like `<div>`, fragments, or elements of `'use worker'` components.** That includes `children`, which render in the worker. An element of any other component throws, since the worker doesn't have its code.
+- **Elements can't have event handlers or refs.** A handler is a function, which throws. Refs are [#39](https://github.com/lawnsea/frontend-systems/issues/39).
 - **Context doesn't cross.** That's [#34](https://github.com/lawnsea/frontend-systems/issues/34).
 
 Each worker loads React and worker-dom, so render a few large `'use worker'` subtrees, not many small ones.

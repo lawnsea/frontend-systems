@@ -31,6 +31,9 @@ function App() {
         <Greeting name={name} count={count}>
           <Badge label={`${name} is new`} />
           <Badge label="worker-rendered" />
+          <div className="note">
+            Passed from the host as <strong>{count}</strong> elements
+          </div>
         </Greeting>
       )}
     </main>
