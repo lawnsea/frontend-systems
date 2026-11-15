@@ -1,15 +1,24 @@
 {
-  "name": "@ampproject/worker-dom",
+  "name": "@lawnsea/worker-dom",
   "version": "0.36.0",
   "description": "A facsimile of a modern DOM implementation intended to run in a Web Worker.",
   "main": "dist/main",
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./types/main.d.ts",
+      "default": "./dist/main.mjs"
+    },
+    "./worker.js": "./dist/worker/worker.js",
+    "./debug/worker.js": "./dist/debug/worker/worker.js"
+  },
   "files": [
-    "dist"
+    "dist",
+    "types"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ampproject/worker-dom.git"
+    "url": "https://github.com/lawnsea/worker-dom.git"
   },
   "engines": {
     "node": ">=18"
@@ -35,8 +44,7 @@
     "presize": "npm-run-all build",
     "size": "filesize",
     "release": "HUSKY_SKIP_HOOKS=1 np --no-2fa",
-    "prepublishOnly": "npm-run-all clean build",
-    "prepare": "husky install"
+    "prepublishOnly": "npm-run-all clean build"
   },
   "devDependencies": {
     "@ampproject/filesize": "4.3.0",
