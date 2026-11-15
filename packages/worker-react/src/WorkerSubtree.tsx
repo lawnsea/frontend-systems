@@ -12,6 +12,8 @@ export interface WorkerSubtreeProps {
   /** worker-dom configuration. Read when the worker starts. */
   config?: UpgradeConfiguration;
   onError?: (error: unknown) => void;
+  /** Set as the host element's `data-worker-subtree` attribute. */
+  name?: string;
   className?: string;
   style?: CSSProperties;
 }
@@ -20,7 +22,7 @@ export interface WorkerSubtreeProps {
  * Renders the component that `src` passes to `renderInWorker`, in a worker.
  * The worker restarts when `src` or `domURL` changes.
  */
-export function WorkerSubtree({ src, domURL, props = {}, config, onError, className, style }: WorkerSubtreeProps) {
+export function WorkerSubtree({ src, domURL, props = {}, config, onError, name, className, style }: WorkerSubtreeProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [worker, setWorker] = useState<ExportedWorker | null>(null);
   const latest = useRef({ config, onError });
@@ -66,5 +68,5 @@ export function WorkerSubtree({ src, domURL, props = {}, config, onError, classN
     worker.callFunction(SET_PROPS, JSON.parse(serialized)).catch((error) => latest.current.onError?.(error));
   }, [worker, serialized]);
 
-  return <div ref={hostRef} className={className} style={style} />;
+  return <div ref={hostRef} data-worker-subtree={name} className={className} style={style} />;
 }
