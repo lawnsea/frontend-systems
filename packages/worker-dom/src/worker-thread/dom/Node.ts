@@ -47,6 +47,11 @@ export abstract class Node {
   private [TransferrableKeys.handlers]: {
     [index: string]: EventHandler[];
   } = {};
+  // The id the main thread knows each handler by, parallel to the handlers for each type.
+  // Ids stay stable while other handlers are removed, unlike positions.
+  private listenerIds_: {
+    [index: string]: number[];
+  } = {};
 
   constructor(nodeType: NodeType, nodeName: NodeName, ownerDocument: Node | null, overrideIndex?: number) {
     this.nodeType = nodeType;
@@ -409,13 +414,15 @@ export abstract class Node {
   public addEventListener(type: string, handler: EventHandler, options: AddEventListenerOptions | undefined = {}): void {
     const lowerType = toLower(type);
     const storedType = storeString(lowerType);
-    const handlers: EventHandler[] = this[TransferrableKeys.handlers][lowerType];
-    let index: number = 0;
-    if (handlers) {
-      index = handlers.push(handler);
-    } else {
-      this[TransferrableKeys.handlers][lowerType] = [handler];
+    const handlers = this[TransferrableKeys.handlers][lowerType] || (this[TransferrableKeys.handlers][lowerType] = []);
+    const ids = this.listenerIds_[lowerType] || (this.listenerIds_[lowerType] = []);
+    // The smallest unused id, so ids fit in the Uint16 mutation stream.
+    let id = 0;
+    while (ids.indexOf(id) >= 0) {
+      id++;
     }
+    handlers.push(handler);
+    ids.push(id);
 
     transfer(this.ownerDocument as Document, [
       TransferrableMutationType.EVENT_SUBSCRIPTION,
@@ -423,7 +430,7 @@ export abstract class Node {
       0,
       1,
       storedType,
-      index,
+      id,
       Number(Boolean(options.capture)),
       Number(Boolean(options.once)),
       Number(Boolean(options.passive)),
@@ -444,13 +451,14 @@ export abstract class Node {
 
     if (index >= 0) {
       handlers.splice(index, 1);
+      const [id] = this.listenerIds_[lowerType].splice(index, 1);
       transfer(this.ownerDocument as Document, [
         TransferrableMutationType.EVENT_SUBSCRIPTION,
         this[TransferrableKeys.index],
         1,
         0,
         storeString(lowerType),
-        index,
+        id,
       ]);
     }
   }

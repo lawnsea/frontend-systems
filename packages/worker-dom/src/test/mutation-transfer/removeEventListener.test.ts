@@ -52,6 +52,85 @@ test.serial('Node.removeEventListener transfers an event subscription', async (t
   });
 });
 
+test.serial('Node.removeEventListener transfers the id the listener was added with after another is removed', async (t) => {
+  const { div, eventHandler, emitter } = t.context;
+  const first = (e: Event) => console.log('first listener');
+
+  return new Promise<void>((resolve) => {
+    function transmitted(strings: Array<string>, message: MutationFromWorker, buffers: Array<ArrayBuffer>) {
+      t.deepEqual(
+        Array.from(new Uint16Array(message[TransferrableKeys.mutations])),
+        [
+          TransferrableMutationType.EVENT_SUBSCRIPTION,
+          div[TransferrableKeys.index],
+          1,
+          0,
+          strings.indexOf('click'),
+          0,
+          TransferrableMutationType.EVENT_SUBSCRIPTION,
+          div[TransferrableKeys.index],
+          1,
+          0,
+          strings.indexOf('click'),
+          1,
+        ],
+        'each removal transfers the id from its addition',
+      );
+      resolve();
+    }
+
+    div.addEventListener('click', first);
+    div.addEventListener('click', eventHandler);
+    Promise.resolve().then(() => {
+      emitter.once(transmitted);
+      div.removeEventListener('click', first);
+      div.removeEventListener('click', eventHandler);
+    });
+  });
+});
+
+test.serial('Node.addEventListener reuses the smallest free id', async (t) => {
+  const { div, eventHandler, emitter } = t.context;
+  const first = (e: Event) => console.log('first listener');
+  const second = (e: Event) => console.log('second listener');
+
+  return new Promise<void>((resolve) => {
+    function transmitted(strings: Array<string>, message: MutationFromWorker, buffers: Array<ArrayBuffer>) {
+      t.deepEqual(
+        Array.from(new Uint16Array(message[TransferrableKeys.mutations])),
+        [
+          TransferrableMutationType.EVENT_SUBSCRIPTION,
+          div[TransferrableKeys.index],
+          1,
+          0,
+          strings.indexOf('click'),
+          0,
+          TransferrableMutationType.EVENT_SUBSCRIPTION,
+          div[TransferrableKeys.index],
+          0,
+          1,
+          strings.indexOf('click'),
+          0,
+          0,
+          0,
+          0,
+          0,
+        ],
+        'the new listener takes the freed id 0',
+      );
+      resolve();
+    }
+
+    div.addEventListener('click', first);
+    div.addEventListener('click', second);
+    Promise.resolve().then(() => {
+      emitter.once(transmitted);
+      div.removeEventListener('click', first);
+      div.addEventListener('click', eventHandler);
+    });
+  });
+});
+
 test.serial('Node.removeEventListener transfers the correct subscription when multiple exist', async (t) => {
   const { div, eventHandler, emitter } = t.context;
 

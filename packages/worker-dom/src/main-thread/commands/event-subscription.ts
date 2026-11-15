@@ -95,7 +95,11 @@ const createTransferrableTouchList = (touchList: TouchList): TransferrableTouchL
   ]);
 
 export const EventSubscriptionProcessor: CommandExecutorInterface = (strings, nodeContext, workerContext, objectContext, config) => {
-  const knownListeners: Array<(event: Event) => any> = [];
+  // Keyed by node index, event type, and the worker's id for the listener.
+  const knownListeners: Map<string, (event: Event) => any> = new Map();
+  // An event reaches every listener on its path, but the worker dispatches it
+  // through its own tree, so each event is sent once.
+  const forwardedEvents: WeakSet<Event> = new WeakSet();
   const allowedExecution = config.executorsAllowed.includes(TransferrableMutationType.EVENT_SUBSCRIPTION);
   let cachedWindowSize: [number, number] = [window.innerWidth, window.innerHeight];
 
@@ -111,9 +115,15 @@ export const EventSubscriptionProcessor: CommandExecutorInterface = (strings, no
       if (preventDefault) {
         event.preventDefault();
       }
+      if (forwardedEvents.has(event)) {
+        return;
+      }
+      forwardedEvents.add(event);
 
       if (shouldTrackChanges(event.currentTarget as HTMLElement)) {
         fireValueChange(workerContext, event.currentTarget as RenderableElement);
+      } else if (shouldTrackChanges(event.target as HTMLElement) && (event.target as RenderableElement)._index_ !== undefined) {
+        fireValueChange(workerContext, event.target as RenderableElement);
       } else if (event.type === 'resize') {
         const { innerWidth, innerHeight } = window;
         if (cachedWindowSize[0] === innerWidth && cachedWindowSize[1] === innerHeight) {
@@ -159,14 +169,24 @@ export const EventSubscriptionProcessor: CommandExecutorInterface = (strings, no
    */
   const processListenerChange = (target: RenderableElement, addEvent: boolean, mutations: Uint16Array, iterator: number): void => {
     const type = strings.get(mutations[iterator]);
-    const eventIndex = mutations[iterator + AddEventRegistrationIndex.Index];
+    const isBase = target === nodeContext.baseElement;
+    const key = `${isBase ? BASE_ELEMENT_INDEX : target._index_}:${type}:${mutations[iterator + AddEventRegistrationIndex.Index]}`;
 
-    if (target === nodeContext.baseElement) {
+    if (isBase) {
+      // Only resize needs the window. Other listeners stay on the base element,
+      // so the worker doesn't see events from the rest of the page.
+      const eventTarget: EventTarget = type === 'resize' ? window : target;
       if (addEvent) {
         const preventDefault = Boolean(mutations[iterator + AddEventRegistrationIndex.WorkerDOMPreventDefault]);
-        addEventListener(type, (knownListeners[eventIndex] = eventHandler(BASE_ELEMENT_INDEX, preventDefault)));
+        const listener = eventHandler(BASE_ELEMENT_INDEX, preventDefault);
+        knownListeners.set(key, listener);
+        eventTarget.addEventListener(type, listener);
       } else {
-        removeEventListener(type, knownListeners[eventIndex]);
+        const listener = knownListeners.get(key);
+        if (listener) {
+          eventTarget.removeEventListener(type, listener);
+          knownListeners.delete(key);
+        }
       }
       return;
     }
@@ -179,12 +199,18 @@ export const EventSubscriptionProcessor: CommandExecutorInterface = (strings, no
         target.onchange = null;
       }
       const preventDefault = Boolean(mutations[iterator + AddEventRegistrationIndex.WorkerDOMPreventDefault]);
-      (target as HTMLElement).addEventListener(type, (knownListeners[eventIndex] = eventHandler(target._index_, preventDefault)));
+      const listener = eventHandler(target._index_, preventDefault);
+      knownListeners.set(key, listener);
+      (target as HTMLElement).addEventListener(type, listener);
     } else {
       if (isChangeEvent) {
         inputEventSubscribed = false;
       }
-      (target as HTMLElement).removeEventListener(type, knownListeners[eventIndex]);
+      const listener = knownListeners.get(key);
+      if (listener) {
+        (target as HTMLElement).removeEventListener(type, listener);
+        knownListeners.delete(key);
+      }
     }
     if (shouldTrackChanges(target as HTMLElement)) {
       if (!inputEventSubscribed) applyDefaultInputListener(workerContext, target as RenderableElement);
@@ -211,8 +237,8 @@ export const EventSubscriptionProcessor: CommandExecutorInterface = (strings, no
         if (target) {
           let iterator = startPosition + EventSubscriptionMutationIndex.Events;
           while (iterator < endPosition) {
-            const isRemoveEvent = iterator <= addEventListenersPosition;
-            processListenerChange(target, isRemoveEvent, mutations, iterator);
+            const isRemoveEvent = iterator < addEventListenersPosition;
+            processListenerChange(target, !isRemoveEvent, mutations, iterator);
             iterator += isRemoveEvent ? REMOVE_EVENT_SUBSCRIPTION_LENGTH : ADD_EVENT_SUBSCRIPTION_LENGTH;
           }
         } else {
