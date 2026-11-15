@@ -1,0 +1,154 @@
+import anyTest, { TestFn } from 'ava';
+import { Document } from '../../worker-thread/dom/Document.js';
+import { MutationFromWorker } from '../../transfer/Messages.js';
+import { TransferrableKeys } from '../../transfer/TransferrableKeys.js';
+import { TransferrableMutationType } from '../../transfer/TransferrableMutation.js';
+import { emitter, Emitter } from '../Emitter.js';
+import { createTestingDocument } from '../DocumentCreation.js';
+import { Element } from '../../worker-thread/dom/Element.js';
+import { Event } from '../../worker-thread/Event.js';
+
+const test = anyTest as TestFn<{
+  document: Document;
+  div: Element;
+  eventHandler: (e: Event) => any;
+  emitter: Emitter;
+}>;
+
+test.beforeEach((t) => {
+  const document = createTestingDocument();
+  const div = document.createElement('div');
+
+  function eventHandler(e: Event) {
+    console.log(e, 'yay');
+  }
+
+  t.context = {
+    document,
+    div,
+    eventHandler,
+    emitter: emitter(document),
+  };
+});
+
+test.serial('Node.removeEventListener transfers an event subscription', async (t) => {
+  const { div, eventHandler, emitter } = t.context;
+
+  return new Promise<void>((resolve) => {
+    function transmitted(strings: Array<string>, message: MutationFromWorker, buffers: Array<ArrayBuffer>) {
+      t.deepEqual(
+        Array.from(new Uint16Array(message[TransferrableKeys.mutations])),
+        [TransferrableMutationType.EVENT_SUBSCRIPTION, div[TransferrableKeys.index], 1, 0, strings.indexOf('click'), 0],
+        'mutation is as expected',
+      );
+      resolve();
+    }
+
+    div.addEventListener('click', eventHandler);
+    Promise.resolve().then(() => {
+      emitter.once(transmitted);
+      div.removeEventListener('click', eventHandler);
+    });
+  });
+});
+
+test.serial('Node.removeEventListener transfers the id the listener was added with after another is removed', async (t) => {
+  const { div, eventHandler, emitter } = t.context;
+  const first = (e: Event) => console.log('first listener');
+
+  return new Promise<void>((resolve) => {
+    function transmitted(strings: Array<string>, message: MutationFromWorker, buffers: Array<ArrayBuffer>) {
+      t.deepEqual(
+        Array.from(new Uint16Array(message[TransferrableKeys.mutations])),
+        [
+          TransferrableMutationType.EVENT_SUBSCRIPTION,
+          div[TransferrableKeys.index],
+          1,
+          0,
+          strings.indexOf('click'),
+          0,
+          TransferrableMutationType.EVENT_SUBSCRIPTION,
+          div[TransferrableKeys.index],
+          1,
+          0,
+          strings.indexOf('click'),
+          1,
+        ],
+        'each removal transfers the id from its addition',
+      );
+      resolve();
+    }
+
+    div.addEventListener('click', first);
+    div.addEventListener('click', eventHandler);
+    Promise.resolve().then(() => {
+      emitter.once(transmitted);
+      div.removeEventListener('click', first);
+      div.removeEventListener('click', eventHandler);
+    });
+  });
+});
+
+test.serial('Node.addEventListener reuses the smallest free id', async (t) => {
+  const { div, eventHandler, emitter } = t.context;
+  const first = (e: Event) => console.log('first listener');
+  const second = (e: Event) => console.log('second listener');
+
+  return new Promise<void>((resolve) => {
+    function transmitted(strings: Array<string>, message: MutationFromWorker, buffers: Array<ArrayBuffer>) {
+      t.deepEqual(
+        Array.from(new Uint16Array(message[TransferrableKeys.mutations])),
+        [
+          TransferrableMutationType.EVENT_SUBSCRIPTION,
+          div[TransferrableKeys.index],
+          1,
+          0,
+          strings.indexOf('click'),
+          0,
+          TransferrableMutationType.EVENT_SUBSCRIPTION,
+          div[TransferrableKeys.index],
+          0,
+          1,
+          strings.indexOf('click'),
+          0,
+          0,
+          0,
+          0,
+          0,
+        ],
+        'the new listener takes the freed id 0',
+      );
+      resolve();
+    }
+
+    div.addEventListener('click', first);
+    div.addEventListener('click', second);
+    Promise.resolve().then(() => {
+      emitter.once(transmitted);
+      div.removeEventListener('click', first);
+      div.addEventListener('click', eventHandler);
+    });
+  });
+});
+
+test.serial('Node.removeEventListener transfers the correct subscription when multiple exist', async (t) => {
+  const { div, eventHandler, emitter } = t.context;
+
+  return new Promise<void>((resolve) => {
+    function transmitted(strings: Array<string>, message: MutationFromWorker, buffers: Array<ArrayBuffer>) {
+      t.deepEqual(
+        Array.from(new Uint16Array(message[TransferrableKeys.mutations])),
+        [TransferrableMutationType.EVENT_SUBSCRIPTION, div[TransferrableKeys.index], 1, 0, strings.indexOf('click'), 1],
+        'mutation is as expected',
+      );
+      resolve();
+    }
+
+    div.addEventListener('click', (e: Event) => console.log('0th listener'));
+    div.addEventListener('click', eventHandler);
+    Promise.resolve().then(() => {
+      emitter.once(transmitted);
+      div.removeEventListener('click', eventHandler);
+    });
+  });
+});
