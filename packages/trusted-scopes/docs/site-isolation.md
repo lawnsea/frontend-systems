@@ -2,7 +2,7 @@
 
 [Site isolation](https://www.chromium.org/Home/chromium-security/site-isolation/) is a browser security feature that mitigates [Spectre](https://spectreattack.com/) and other side-channel attacks, as well as attacks from a compromised renderer, by running documents from different [sites](https://html.spec.whatwg.org/multipage/browsers.html#sites) in different processes.
 
-Browsers consider two documents to be from the same site if their origins' hostnames have the same [registrable domain](https://developer.mozilla.org/en-US/docs/Glossary/Registrable_domain), defined as the first subdomain of their effective top-level domain (example.com and example.co.uk, e.g.). So, foo.example.com and bar.example.com have different origins but the same site. Browsers use the [Public Suffix List](https://publicsuffix.org/) to determine an origin's eTLD. A domain owner can add a subdomain to this list to make it an eTLD. If foo.example.com appears in the public suffix list, for example, then it is a different site than bar.example.com.
+Browsers consider two documents to be from the same site if their origins have the same scheme and their hostnames have the same [registrable domain](https://developer.mozilla.org/en-US/docs/Glossary/Registrable_domain), defined as the first subdomain of their effective top-level domain (example.com and example.co.uk, e.g.). So, foo.example.com and bar.example.com have different origins but the same site. Browsers use the [Public Suffix List](https://publicsuffix.org/) to determine an origin's eTLD. A domain owner can add a subdomain to this list to make it an eTLD. If foo.example.com appears in the public suffix list, for example, then it is a different site than bar.example.com.
 
 Chromium and Firefox enable site isolation by default. WebKit support is in progress and disabled by default, but can be enabled by the user in Safari's Technology Preview. Browser implementations of site isolation differ.
 
@@ -24,7 +24,7 @@ Chromium runs documents created from null-origin Blob URLs of the form `blob:nul
 
 ### Firefox
 
-Service workers run in a separate process for each site (see Firefox's [process model](https://firefox-source-docs.mozilla.org/dom/ipc/process_model.html) documentation), so the page can't read the key, but an attacker-controlled service worker can. However, Firefox assigns documents with opaque origins to the site of the document that created them (see [`dom/ipc/ProcessIsolation.cpp`](https://github.com/mozilla-firefox/firefox/blob/ac7b5e4bc10b65142541a54b0ef23462647f7da1/dom/ipc/ProcessIsolation.cpp) in the Firefox source), so sandboxed frames are vulnerable to side channel attacks.
+Service workers run in a separate process for each site (see Firefox's [process model](https://firefox-source-docs.mozilla.org/dom/ipc/process_model.html) documentation), so the page can't read the key, but an attacker-controlled service worker can. However, Firefox assigns documents with opaque origins to the site of the document that created them (see [`dom/ipc/ProcessIsolation.cpp`](https://github.com/mozilla-firefox/firefox/blob/ac7b5e4bc10b65142541a54b0ef23462647f7da1/dom/ipc/ProcessIsolation.cpp) in the Firefox source), so sandboxed frames are vulnerable to side-channel attacks.
 
 ### WebKit
 
