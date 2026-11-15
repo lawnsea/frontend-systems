@@ -30,8 +30,8 @@ export class WorkerContext {
     const cssKeys: Array<string> = [];
     const globalEventHandlerKeys: Array<string> = [];
     // TODO(choumx): Sync read of all localStorage and sessionStorage a possible performance bottleneck?
-    const localStorageInit = getStorageInit('localStorage');
-    const sessionStorageInit = getStorageInit('sessionStorage');
+    const localStorageInit = getStorageInit('localStorage', config.sanitizer);
+    const sessionStorageInit = getStorageInit('sessionStorage', config.sanitizer);
 
     for (const key in baseElement.style) {
       cssKeys.push(key);

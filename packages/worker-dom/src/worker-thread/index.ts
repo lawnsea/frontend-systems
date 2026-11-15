@@ -43,6 +43,7 @@ import { DocumentFragment } from './dom/DocumentFragment.js';
 import { Element } from './dom/Element.js';
 import { rafPolyfill, cafPolyfill } from './AnimationFrame.js';
 import { HydrateFunction } from './hydrate.js';
+import { callFunctionMessageHandler, exportFunction } from './function.js';
 
 const globalScope: GlobalScope = {
   innerWidth: 0,
@@ -114,5 +115,9 @@ export const workerDOM = (function (postMessage, addEventListener, removeEventLi
 
   return document.defaultView;
 })(postMessage.bind(self) || noop, addEventListener.bind(self) || noop, removeEventListener.bind(self) || noop);
+
+// Allows for function invocation
+(self as any).exportFunction = exportFunction;
+addEventListener('message', (evt: MessageEvent) => callFunctionMessageHandler(evt, workerDOM.document));
 
 export const hydrate: HydrateFunction = initialize;
