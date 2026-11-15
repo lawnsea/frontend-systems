@@ -1,15 +1,16 @@
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { WorkerSubtree, createSanitizer } from "worker-react";
+import { WorkerReactConfig, createSanitizer } from "worker-react";
+import { Greeting } from "./Greeting.js";
+import Badge from "./Badge.js";
 
-// Served by vite.config.ts.
-const domURL = "/worker-dom.js";
-
-const config = {
-  sanitizer: createSanitizer({
-    node: (node) => node.nodeName !== "IFRAME",
-    attribute: (_, name, value) => !(name === "href" && value !== null && /^\s*javascript:/i.test(value)),
-  }),
+const workerConfig = {
+  config: {
+    sanitizer: createSanitizer({
+      node: (node) => node.nodeName !== "IFRAME",
+      attribute: (_, name, value) => !(name === "href" && value !== null && /^\s*javascript:/i.test(value)),
+    }),
+  },
 };
 
 function App() {
@@ -26,13 +27,20 @@ function App() {
       <label>
         <input type="checkbox" checked={shown} onChange={(e) => setShown(e.target.checked)} /> Show subtree
       </label>
-      {shown && <WorkerSubtree className="subtree" src="/subtree.js" domURL={domURL} props={{ name, count }} config={config} />}
+      {shown && (
+        <Greeting name={name} count={count}>
+          <Badge label={`${name} is new`} />
+          <Badge label="worker-rendered" />
+        </Greeting>
+      )}
     </main>
   );
 }
 
 createRoot(document.getElementById("app")!).render(
   <StrictMode>
-    <App />
+    <WorkerReactConfig value={workerConfig}>
+      <App />
+    </WorkerReactConfig>
   </StrictMode>,
 );

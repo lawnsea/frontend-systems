@@ -6,8 +6,9 @@
   "scripts": {
     "build:deps": "pnpm --filter @lawnsea/worker-dom --filter worker-react build",
     "dev": "pnpm build:deps && vite",
+    "build": "pnpm build:deps && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "pnpm build:deps && playwright test"
+    "test": "pnpm build:deps && playwright test && PREVIEW=1 playwright test"
   },
   "dependencies": {
     "@lawnsea/worker-dom": "workspace:*",
