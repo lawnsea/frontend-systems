@@ -1,0 +1,49 @@
+{
+  "name": "@ampproject/worker-dom-linter",
+  "version": "0.0.1",
+  "description": "Worker DOM Linter Babel plugin",
+  "author": "The AMP HTML Authors",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/ampproject/worker-dom/tree/master/tools/linter",
+  "main": "lib/index.js",
+  "keywords": [
+    "babel-plugin"
+  ],
+  "scripts": {
+    "clean": "rimraf lib",
+    "build": "shx cp -r src/ lib",
+    "test": "ava -v test/index.js",
+    "prepublish": "npm-run-all clean build",
+    "lint": "lint-staged"
+  },
+  "dependencies": {
+    "@babel/helper-plugin-utils": "^7.0.0"
+  },
+  "peerDependencies": {
+    "@babel/core": "^7.0.0-0"
+  },
+  "devDependencies": {
+    "ava": "5.3.1",
+    "esm": "3.2.25",
+    "lint-staged": "14.0.1",
+    "npm-run-all2": "5.0.2",
+    "prettier": "3.2.5",
+    "rimraf": "5.0.5",
+    "shx": "0.3.4"
+  },
+  "lint-staged": {
+    "src/*.js": [
+      "prettier --config config/.prettierrc --write",
+      "git add"
+    ]
+  },
+  "ava": {
+    "require": [
+      "esm"
+    ]
+  },
+  "volta": {
+    "node": "22.16.0",
+    "yarn": "1.22.22"
+  }
+}
