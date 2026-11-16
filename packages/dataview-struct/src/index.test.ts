@@ -2,36 +2,33 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 import {
   BigInt64,
   Bool,
-  type DataViewLike,
-  DataViewSlice,
   defineStruct,
   Float32,
   Int16BE,
-  type Init,
-  type SliceMode,
   Uint8,
   Uint32,
+  type Init,
 } from './index.js';
 
 class IsoDate {
   static readonly size = 8;
-  static fromDataView(view: DataViewLike): Date {
-    return new Date(view.getFloat64(0, true));
+  static fromDataView(view: DataView, byteOffset: number): Date {
+    return new Date(view.getFloat64(byteOffset, true));
   }
-  static toDataView(value: Date, view: DataViewLike): void {
-    view.setFloat64(0, value.getTime(), true);
+  static toDataView(value: Date, view: DataView, byteOffset: number): void {
+    view.setFloat64(byteOffset, value.getTime(), true);
   }
 }
+
+const Position = defineStruct({ x: Float32, y: Float32, z: Float32 }, 'Position');
+const Fiz = defineStruct({ id: Uint32, on: Bool }, 'Fiz');
+const Thing = defineStruct({ x: Float32, y: Float32, foo: { bar: IsoDate }, fiz: Fiz }, 'Thing');
 
 function viewOf(size: number): DataView {
   return new DataView(new ArrayBuffer(size));
 }
 
-describe.each<SliceMode>(['movable', 'native'])('defineStruct with %s slices', (slices) => {
-  const Position = defineStruct({ x: Float32, y: Float32, z: Float32 }, { name: 'Position', slices });
-  const Fiz = defineStruct({ id: Uint32, on: Bool }, { name: 'Fiz', slices });
-  const Thing = defineStruct({ x: Float32, y: Float32, foo: { bar: IsoDate }, fiz: Fiz }, { name: 'Thing', slices });
-
+describe('defineStruct', () => {
   it('packs fields in key order', () => {
     expect(Position.size).toBe(12);
     expect(Fiz.size).toBe(5);
@@ -39,9 +36,9 @@ describe.each<SliceMode>(['movable', 'native'])('defineStruct with %s slices', (
     expect(Position.name).toBe('Position');
   });
 
-  it('reads and writes little-endian bytes at the start of a slice', () => {
-    const view = viewOf(24);
-    const p = Position.create(new DataViewSlice(new DataViewSlice(view, 4), 4));
+  it('reads and writes little-endian bytes at the bound offset', () => {
+    const view = viewOf(20);
+    const p = Position.create(view, 8);
     p.x = 1.5;
     p.z = -2;
     expect(view.getFloat32(8, true)).toBe(1.5);
@@ -50,15 +47,8 @@ describe.each<SliceMode>(['movable', 'native'])('defineStruct with %s slices', (
     expect(p.y).toBe(3);
   });
 
-  it('accepts a DataView with its own byteOffset', () => {
-    const buffer = new ArrayBuffer(16);
-    const p = Position.create(new DataView(buffer, 4));
-    p.x = 7;
-    expect(new DataView(buffer).getFloat32(4, true)).toBe(7);
-  });
-
   it('supports big-endian and bigint codecs', () => {
-    const S = defineStruct({ a: Int16BE, b: BigInt64, c: Uint8 }, { slices });
+    const S = defineStruct({ a: Int16BE, b: BigInt64, c: Uint8 });
     const view = viewOf(S.size);
     const s = S.create(view);
     s.a = 0x0102;
@@ -74,12 +64,12 @@ describe.each<SliceMode>(['movable', 'native'])('defineStruct with %s slices', (
     const t = Thing.create(view);
     const when = new Date('2026-01-01T00:00:00Z');
     t.foo.bar = when;
-    t.fiz.id = 23;
+    t.fiz.id = 7;
     t.fiz.on = true;
     expect(view.getFloat64(8, true)).toBe(when.getTime());
-    expect(view.getUint32(16, true)).toBe(23);
+    expect(view.getUint32(16, true)).toBe(7);
     expect(view.getUint8(20)).toBe(1);
-    expect(t.toJSON()).toEqual({ x: 0, y: 0, foo: { bar: when }, fiz: { id: 23, on: true } });
+    expect(t.toJSON()).toEqual({ x: 0, y: 0, foo: { bar: when }, fiz: { id: 7, on: true } });
   });
 
   it('rejects assignment to nested fields', () => {
@@ -96,8 +86,8 @@ describe.each<SliceMode>(['movable', 'native'])('defineStruct with %s slices', (
       foo: { bar: new Date(0) },
       fiz: { id: 3, on: false },
     };
-    Thing.toDataView(value, view);
-    const t = Thing.fromDataView(view);
+    Thing.toDataView(value, view, 0);
+    const t = Thing.fromDataView(view, 0);
     expect(t.toJSON()).toEqual(value);
     t.set({ y: 9, fiz: { on: true } });
     expect(t.toJSON()).toEqual({ ...value, y: 9, fiz: { id: 3, on: true } });
@@ -110,58 +100,57 @@ describe.each<SliceMode>(['movable', 'native'])('defineStruct with %s slices', (
   });
 
   it('throws when the view is too small', () => {
-    expect(() => Position.create(new DataViewSlice(viewOf(12), 4))).toThrow(RangeError);
-    expect(() => Position.toDataView({ x: 0, y: 0, z: 0 }, viewOf(8))).toThrow(RangeError);
+    expect(() => Position.create(viewOf(12), 4)).toThrow(RangeError);
+    expect(() => Position.create(viewOf(12), -1)).toThrow(RangeError);
+    expect(() => Position.toDataView({ x: 0, y: 0, z: 0 }, viewOf(8), 0)).toThrow(RangeError);
   });
 
   it('rejects reserved names and non-codec fields', () => {
-    expect(() => defineStruct({ set: Uint8 }, { slices })).toThrow(/reserved/);
-    expect(() => defineStruct({ a: 4 as never }, { slices })).toThrow(/expected a codec/);
+    expect(() => defineStruct({ set: Uint8 })).toThrow(/reserved/);
+    expect(() => defineStruct({ a: 4 as never })).toThrow(/expected a codec/);
+  });
+});
+
+describe('recycle', () => {
+  it('reuses recycled instances', () => {
+    const p = Position.create(viewOf(12));
+    Position.recycle(p);
+    const view = viewOf(24);
+    const q = Position.create(view, 12);
+    expect(q).toBe(p);
+    q.x = 4;
+    expect(view.getFloat32(12, true)).toBe(4);
   });
 
-  describe('recycle', () => {
-    it('reuses recycled instances', () => {
-      const p = Position.create(viewOf(12));
-      Position.recycle(p);
-      const view = viewOf(24);
-      const q = Position.create(new DataViewSlice(view, 12));
-      expect(q).toBe(p);
-      q.x = 4;
-      expect(view.getFloat32(12, true)).toBe(4);
-    });
+  it('rebinds nested fields', () => {
+    const t = Thing.create(viewOf(Thing.size));
+    const fiz = t.fiz;
+    Thing.recycle(t);
+    const view = viewOf(Thing.size + 3);
+    const u = Thing.create(view, 3);
+    expect(u.fiz).toBe(fiz);
+    u.fiz.id = 1;
+    expect(view.getUint32(3 + 16, true)).toBe(1);
+  });
 
-    it('rebinds nested fields', () => {
-      const t = Thing.create(viewOf(Thing.size));
-      const fiz = t.fiz;
-      Thing.recycle(t);
-      const view = viewOf(Thing.size + 3);
-      const u = Thing.create(new DataViewSlice(view, 3));
-      expect(u.fiz).toBe(fiz);
-      u.fiz.id = 1;
-      expect(view.getUint32(3 + 16, true)).toBe(1);
-    });
+  it('makes use after recycle throw', () => {
+    const t = Thing.create(viewOf(Thing.size));
+    const fiz = t.fiz;
+    Thing.recycle(t);
+    expect(() => t.x).toThrow(/used after recycle/);
+    expect(() => (fiz.id = 1)).toThrow(/used after recycle/);
+    expect(() => Thing.recycle(t)).toThrow(/already recycled/);
+  });
 
-    it('makes use after recycle throw', () => {
-      const t = Thing.create(viewOf(Thing.size));
-      const fiz = t.fiz;
-      Thing.recycle(t);
-      expect(() => t.x).toThrow(/used after recycle/);
-      expect(() => (fiz.id = 1)).toThrow(/used after recycle/);
-      expect(() => Thing.recycle(t)).toThrow(/already recycled/);
-    });
-
-    it('refuses nested fields and foreign instances', () => {
-      const t = Thing.create(viewOf(Thing.size));
-      expect(() => Fiz.recycle(t.fiz)).toThrow(/Recycle the parent/);
-      expect(() => Position.recycle(t as never)).toThrow(/expected an instance/);
-    });
+  it('refuses nested fields and foreign instances', () => {
+    const t = Thing.create(viewOf(Thing.size));
+    expect(() => Fiz.recycle(t.fiz)).toThrow(/Recycle the parent/);
+    expect(() => Position.recycle(t as never)).toThrow(/expected an instance/);
   });
 });
 
 describe('types', () => {
   it('infers field types from codecs', () => {
-    const Fiz = defineStruct({ id: Uint32, on: Bool });
-    const Thing = defineStruct({ x: Float32, y: Float32, foo: { bar: IsoDate }, fiz: Fiz });
     const t = Thing.create(viewOf(Thing.size));
     expectTypeOf(t.x).toEqualTypeOf<number>();
     expectTypeOf(t.foo.bar).toEqualTypeOf<Date>();
@@ -172,8 +161,8 @@ describe('types', () => {
       foo: { bar: Date };
       fiz: { id: number; on: boolean };
     }>();
-    type F = InstanceType<typeof Fiz>;
-    expectTypeOf<F['id']>().toEqualTypeOf<number>();
+    type P = InstanceType<typeof Position>;
+    expectTypeOf<P['x']>().toEqualTypeOf<number>();
     // @ts-expect-error wrong value type
     t.x = 'a';
   });
