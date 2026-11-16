@@ -64,6 +64,21 @@ Scalar fields read and write the DataView on every access. Nothing is cached. Ne
 
 The pool has no size limit. It keeps every recycled instance until `create` reuses it.
 
+## DataViewSlice
+
+A **DataViewSlice** is to a DataView what a DataView is to an ArrayBuffer: a window onto some of its bytes, addressed from 0.
+
+```ts
+const buffer = new ArrayBuffer(16);
+const view = new DataView(buffer, 8);
+const slice = new DataViewSlice(view, 4, 2);
+slice.setUint16(0, 420); // writes bytes 12 and 13 of buffer
+```
+
+It has DataView's `get` and `set` methods, `buffer`, `byteOffset`, and `byteLength`. Access outside the slice throws `RangeError`. A slice of a slice points straight at the underlying DataView.
+
+It is standalone: codecs and `create` take a DataView and a byte offset, not a slice. Reads and writes through a slice cost about 1.6x a native DataView because of the extra bounds check and call.
+
 ## Performance
 
 Run `pnpm bench` to reproduce. On Node 24 (Apple silicon), reading `x`, `y`, and `z` and writing `x` costs, per position:
