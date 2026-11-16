@@ -149,6 +149,45 @@ describe('recycle', () => {
   });
 });
 
+describe('nested schemas', () => {
+  it('share a class when field names and codecs match', () => {
+    const A = defineStruct({ a: { bar: IsoDate, n: Uint8 } });
+    const B = defineStruct({ b: Uint8, c: { bar: IsoDate, n: Uint8 }, d: { n: Uint8, bar: IsoDate } });
+    const a = A.create(viewOf(A.size));
+    const b = B.create(viewOf(B.size));
+    expect(b.c.constructor).toBe(a.a.constructor);
+    expect(b.d.constructor).not.toBe(a.a.constructor);
+    expect(defineStruct({ e: { bar: Float32, n: Uint8 } }).create(viewOf(5)).e.constructor).not.toBe(
+      a.a.constructor,
+    );
+  });
+
+  it('return children to their own pool on recycle', () => {
+    const t = Thing.create(viewOf(Thing.size));
+    const fiz = t.fiz;
+    Thing.recycle(t);
+    const view = viewOf(Fiz.size);
+    const f = Fiz.create(view);
+    expect(f).toBe(fiz);
+    f.id = 5;
+    expect(view.getUint32(0, true)).toBe(5);
+    Fiz.recycle(f);
+  });
+
+  it('throw when read through a recycled parent', () => {
+    const t = Thing.create(viewOf(Thing.size));
+    Thing.recycle(t);
+    expect(() => t.fiz).toThrow(/used after recycle/);
+  });
+
+  it('write and read without creating a child', () => {
+    const view = viewOf(Thing.size);
+    const t = Thing.create(view).set({ fiz: { id: 9 }, foo: { bar: new Date(5) } });
+    expect(view.getUint32(16, true)).toBe(9);
+    expect(t.toJSON().foo.bar).toEqual(new Date(5));
+  });
+});
+
 describe('types', () => {
   it('infers field types from codecs', () => {
     const t = Thing.create(viewOf(Thing.size));

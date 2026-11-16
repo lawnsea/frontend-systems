@@ -62,6 +62,8 @@ Scalar fields read and write the DataView on every access. Nothing is cached. Ne
 
 `set` and `toJSON` are reserved and can't be used as field names.
 
+A nested field's instance comes from its class's pool the first time it's read, and returns to that pool when the parent is recycled. `set` and `toJSON` read and write nested bytes directly, so they never create one. A nested schema object becomes an anonymous struct class. Nested schemas with the same field names, in the same order, with the same codecs share one class and one pool.
+
 The pool has no size limit. It keeps every recycled instance until `create` reuses it.
 
 ## DataViewSlice
@@ -99,3 +101,4 @@ Each field has its own accessor on the class prototype. That keeps each call sit
 - `pnpm typecheck` typechecks `src`, including tests.
 - `pnpm test` runs the unit tests with [Vitest](https://vitest.dev/).
 - `pnpm bench` builds the package and runs `bench/access.js`.
+- `node bench/nested.js [dist...]` measures nested structs in fresh processes, comparing builds when given several `dist` directories.

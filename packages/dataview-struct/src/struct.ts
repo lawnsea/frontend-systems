@@ -79,12 +79,16 @@ export interface StructClass<S extends Schema> {
   toDataView(value: Init<S>, view: DataView, byteOffset: number): void;
 }
 
+
 const VIEW = Symbol('view');
 const OFFSET = Symbol('byteOffset');
-const CHILDREN = Symbol('children');
 const OWNED = Symbol('owned');
-const BIND = Symbol('bind');
-const UNBIND = Symbol('unbind');
+const LIVE = Symbol('live');
+const ATTACHED = Symbol('attached');
+const READ = Symbol('read');
+const WRITE = Symbol('write');
+const RELEASE = Symbol('release');
+const ACQUIRE = Symbol('acquire');
 
 const RESERVED = new Set(['set', 'toJSON', 'constructor', '__proto__']);
 
@@ -100,19 +104,28 @@ interface Field {
   key: string;
   byteOffset: number;
   codec: Codec<unknown>;
+  /** The field's struct class, or `undefined` for a scalar codec. */
+  struct: InternalClass | undefined;
+  /** Where an instance keeps this nested field's child. */
+  slot: symbol;
 }
 
 interface Internal {
   [VIEW]: DataView;
   [OFFSET]: number;
-  [CHILDREN]: Internal[];
   [OWNED]: boolean;
+  [LIVE]: boolean;
+  /** How many nested children this instance holds. */
+  [ATTACHED]: number;
+  // Nested children, one slot per nested field.
+  [slot: symbol]: unknown;
 }
 
 interface InternalClass {
-  new (): Internal;
-  [BIND](instance: Internal, view: DataView, byteOffset: number): void;
-  [UNBIND](instance: Internal): void;
+  [ACQUIRE](view: DataView, byteOffset: number): Internal;
+  [READ](view: DataView, byteOffset: number): Record<string, unknown>;
+  [WRITE](values: Record<string, unknown>, view: DataView, byteOffset: number): void;
+  [RELEASE](instance: Internal): void;
 }
 
 function isCodec(value: unknown): value is Codec<unknown> {
@@ -129,12 +142,65 @@ function isPlainObject(value: unknown): value is Schema {
   return proto === Object.prototype || proto === null;
 }
 
-function isStructClass(value: unknown): value is InternalClass & StructClass<Schema> {
-  return typeof value === 'function' && BIND in value;
+function isStructClass(value: unknown): value is InternalClass {
+  return typeof value === 'function' && RELEASE in value;
+}
+
+const codecIds = new WeakMap<object, number>();
+let nextCodecId = 0;
+
+function codecId(codec: object): number {
+  let id = codecIds.get(codec);
+  if (id === undefined) {
+    id = nextCodecId++;
+    codecIds.set(codec, id);
+  }
+  return id;
+}
+
+// Classes for nested schema objects, keyed by field names and codec identities, so equal nested
+// schemas share one class and one pool. Entries live as long as the module.
+const anonymous = new Map<string, StructClass<Schema>>();
+
+/** Validates `schema` and replaces nested schema objects with (cached) struct classes. */
+function resolve(schema: Schema, name: string): [string, Codec<unknown>][] {
+  return Object.keys(schema).map((key) => {
+    if (RESERVED.has(key)) {
+      throw new TypeError(`${name}: field name "${key}" is reserved. Rename the field.`);
+    }
+    const value = schema[key] as unknown;
+    let codec: Codec<unknown>;
+    if (isCodec(value)) {
+      codec = value;
+    } else if (isPlainObject(value)) {
+      codec = nestedClass(value, `${name}.${key}`) as unknown as Codec<unknown>;
+    } else {
+      throw new TypeError(
+        `${name}.${key}: expected a codec (with size, fromDataView, and toDataView) or a nested schema object.`,
+      );
+    }
+    if (!Number.isInteger(codec.size) || codec.size < 0) {
+      throw new TypeError(`${name}.${key}: codec size must be a non-negative integer, got ${codec.size}.`);
+    }
+    return [key, codec];
+  });
+}
+
+function nestedClass(schema: Schema, name: string): StructClass<Schema> {
+  const fields = resolve(schema, name);
+  const key = JSON.stringify(fields.map(([field, codec]) => [field, codecId(codec)]));
+  let struct = anonymous.get(key);
+  if (struct === undefined) {
+    struct = build(schema, fields, name);
+    anonymous.set(key, struct);
+  }
+  return struct;
 }
 
 /**
  * Builds a class whose instances read and write `schema`'s fields in a caller-supplied DataView.
+ * Nested schema objects become anonymous struct classes, shared by every nested schema with the
+ * same field names and codecs.
  *
  * ```ts
  * const Position = defineStruct({ x: Float32, y: Float32, z: Float32 });
@@ -144,56 +210,81 @@ function isStructClass(value: unknown): value is InternalClass & StructClass<Sch
  * ```
  */
 export function defineStruct<S extends Schema>(schema: S, name = 'Struct'): StructClass<S> {
-  const scalars: Field[] = [];
-  const nested: Field[] = [];
-  const byKey = new Map<string, Field>();
-  let size = 0;
+  return build(schema, resolve(schema, name), name);
+}
 
-  for (const key of Object.keys(schema)) {
-    if (RESERVED.has(key)) {
-      throw new TypeError(`${name}: field name "${key}" is reserved. Rename the field.`);
-    }
-    let codec = schema[key] as unknown;
-    if (!isCodec(codec)) {
-      if (!isPlainObject(codec)) {
-        throw new TypeError(
-          `${name}.${key}: expected a codec (with size, fromDataView, and toDataView) or a nested schema object.`,
-        );
-      }
-      codec = defineStruct(codec, `${name}.${key}`);
-    }
-    const { size: fieldSize } = codec as Codec<unknown>;
-    if (!Number.isInteger(fieldSize) || fieldSize < 0) {
-      throw new TypeError(`${name}.${key}: codec size must be a non-negative integer, got ${fieldSize}.`);
-    }
-    const field = { key, byteOffset: size, codec: codec as Codec<unknown> };
-    (isStructClass(codec) ? nested : scalars).push(field);
-    byKey.set(key, field);
-    size += fieldSize;
+function build<S extends Schema>(schema: S, resolved: [string, Codec<unknown>][], name: string): StructClass<S> {
+  const fields: Field[] = [];
+  const nested: Field[] = [];
+  let size = 0;
+  for (const [key, codec] of resolved) {
+    const field = { key, byteOffset: size, codec, struct: isStructClass(codec) ? codec : undefined, slot: Symbol(key) };
+    fields.push(field);
+    if (field.struct !== undefined) nested.push(field);
+    size += codec.size;
   }
 
   const pool: StructImpl[] = [];
 
-  function bind(instance: Internal, view: DataView, byteOffset: number): void {
+  function checkRange(view: DataView, byteOffset: number): void {
     if (!Number.isInteger(byteOffset) || byteOffset < 0 || byteOffset + size > view.byteLength) {
       throw new RangeError(
         `${name}: needs ${size} bytes at offset ${byteOffset}, but the view is ${view.byteLength} bytes.`,
       );
     }
-    instance[VIEW] = view;
-    instance[OFFSET] = byteOffset;
-    const children = instance[CHILDREN];
-    for (let i = 0; i < nested.length; i++) {
-      (nested[i]!.codec as unknown as InternalClass)[BIND](children[i]!, view, byteOffset + nested[i]!.byteOffset);
-    }
   }
 
-  function unbind(instance: Internal): void {
+  function bind(instance: Internal, view: DataView, byteOffset: number): void {
+    checkRange(view, byteOffset);
+    instance[VIEW] = view;
+    instance[OFFSET] = byteOffset;
+    instance[LIVE] = true;
+  }
+
+  // Returns the instance and any children it created to their pools.
+  function release(instance: Internal): void {
+    if (instance[ATTACHED] !== 0) {
+      for (let i = 0; i < releasers.length; i++) releasers[i]!(instance);
+      instance[ATTACHED] = 0;
+    }
     instance[VIEW] = RECYCLED;
     instance[OFFSET] = 0;
-    const children = instance[CHILDREN];
-    for (let i = 0; i < nested.length; i++) {
-      (nested[i]!.codec as unknown as InternalClass)[UNBIND](children[i]!);
+    instance[LIVE] = false;
+    pool.push(instance as StructImpl);
+  }
+
+  // Each nested field gets its own closures so every slot access sees one constant key, which V8
+  // handles as a fast named-property access. Initializing every slot at construction gives all
+  // instances of a class one shape.
+  const initializers = nested.map(({ slot }) => (instance: Internal) => {
+    instance[slot] = undefined;
+  });
+  const releasers = nested.map(({ struct, slot }) => (instance: Internal) => {
+    const child = instance[slot] as Internal | undefined;
+    if (child === undefined) return;
+    child[OWNED] = false;
+    struct![RELEASE](child);
+    instance[slot] = undefined;
+  });
+
+
+  function read(view: DataView, byteOffset: number): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const { key, byteOffset: fieldOffset, codec, struct } of fields) {
+      result[key] =
+        struct === undefined
+          ? codec.fromDataView(view, byteOffset + fieldOffset)
+          : struct[READ](view, byteOffset + fieldOffset);
+    }
+    return result;
+  }
+
+  function write(values: Record<string, unknown>, view: DataView, byteOffset: number): void {
+    for (const { key, byteOffset: fieldOffset, codec, struct } of fields) {
+      const value = values[key];
+      if (value === undefined) continue;
+      if (struct === undefined) codec.toDataView(value, view, byteOffset + fieldOffset);
+      else struct[WRITE](value as Record<string, unknown>, view, byteOffset + fieldOffset);
     }
   }
 
@@ -203,24 +294,14 @@ export function defineStruct<S extends Schema>(schema: S, name = 'Struct'): Stru
 
     [VIEW]: DataView = RECYCLED;
     [OFFSET] = 0;
-    [CHILDREN]: Internal[];
     [OWNED] = false;
+    [LIVE] = false;
+    [ATTACHED] = 0;
+    [slot: symbol]: unknown;
 
     constructor(view?: DataView, byteOffset = 0) {
-      this[CHILDREN] = nested.map(({ codec }) => {
-        const child = new (codec as unknown as InternalClass)();
-        child[OWNED] = true;
-        return child;
-      });
+      for (let i = 0; i < initializers.length; i++) initializers[i]!(this);
       if (view !== undefined) bind(this, view, byteOffset);
-    }
-
-    static [BIND](instance: Internal, view: DataView, byteOffset: number): void {
-      bind(instance, view, byteOffset);
-    }
-
-    static [UNBIND](instance: Internal): void {
-      unbind(instance);
     }
 
     static create(view: DataView, byteOffset = 0): StructImpl {
@@ -236,11 +317,31 @@ export function defineStruct<S extends Schema>(schema: S, name = 'Struct'): Stru
       if (instance[OWNED]) {
         throw new TypeError(`${name}.recycle: a nested field belongs to its parent. Recycle the parent.`);
       }
-      if (instance[VIEW] === RECYCLED) {
+      if (!instance[LIVE]) {
         throw new TypeError(`${name}.recycle: instance is already recycled.`);
       }
-      unbind(instance);
-      pool.push(instance);
+      release(instance);
+    }
+
+    // Binds a pooled instance without a range check, for a child inside an already-checked parent.
+    static [ACQUIRE](view: DataView, byteOffset: number): StructImpl {
+      const instance = pool.pop() ?? new StructImpl();
+      instance[VIEW] = view;
+      instance[OFFSET] = byteOffset;
+      instance[LIVE] = true;
+      return instance;
+    }
+
+    static [RELEASE](instance: Internal): void {
+      release(instance);
+    }
+
+    static [READ](view: DataView, byteOffset: number): Record<string, unknown> {
+      return read(view, byteOffset);
+    }
+
+    static [WRITE](values: Record<string, unknown>, view: DataView, byteOffset: number): void {
+      write(values, view, byteOffset);
     }
 
     static fromDataView(view: DataView, byteOffset: number): StructImpl {
@@ -248,49 +349,25 @@ export function defineStruct<S extends Schema>(schema: S, name = 'Struct'): Stru
     }
 
     static toDataView(value: Record<string, unknown>, view: DataView, byteOffset: number): void {
-      if (!Number.isInteger(byteOffset) || byteOffset < 0 || byteOffset + size > view.byteLength) {
-        throw new RangeError(
-          `${name}: needs ${size} bytes at offset ${byteOffset}, but the view is ${view.byteLength} bytes.`,
-        );
-      }
-      for (const { key, byteOffset: fieldOffset, codec } of byKey.values()) {
-        codec.toDataView(value[key], view, byteOffset + fieldOffset);
-      }
+      checkRange(view, byteOffset);
+      write(value, view, byteOffset);
     }
 
     set(values: Record<string, unknown>): this {
-      const children = this[CHILDREN];
-      for (const [key, field] of byKey) {
-        const value = values[key];
-        if (value === undefined) continue;
-        const childIndex = nested.indexOf(field);
-        if (childIndex === -1) {
-          field.codec.toDataView(value, this[VIEW], this[OFFSET] + field.byteOffset);
-        } else {
-          (children[childIndex] as unknown as StructImpl).set(value as Record<string, unknown>);
-        }
-      }
+      write(values, this[VIEW], this[OFFSET]);
       return this;
     }
 
     toJSON(): Record<string, unknown> {
-      const result: Record<string, unknown> = {};
-      const children = this[CHILDREN];
-      for (const [key, field] of byKey) {
-        const childIndex = nested.indexOf(field);
-        result[key] =
-          childIndex === -1
-            ? field.codec.fromDataView(this[VIEW], this[OFFSET] + field.byteOffset)
-            : (children[childIndex] as unknown as StructImpl).toJSON();
-      }
-      return result;
+      return read(this[VIEW], this[OFFSET]);
     }
   }
 
   Object.defineProperty(StructImpl, 'name', { value: name });
 
   // One closure per field keeps each accessor monomorphic, so V8 can inline the codec call.
-  for (const { key, byteOffset, codec } of scalars) {
+  for (const { key, byteOffset, codec, struct } of fields) {
+    if (struct !== undefined) continue;
     Object.defineProperty(StructImpl.prototype, key, {
       get(this: Internal) {
         return codec.fromDataView(this[VIEW], this[OFFSET] + byteOffset);
@@ -301,14 +378,26 @@ export function defineStruct<S extends Schema>(schema: S, name = 'Struct'): Stru
       enumerable: true,
     });
   }
-  nested.forEach(({ key }, i) => {
+  // A nested field's instance comes from its class's pool on first read and returns on recycle.
+  for (const { key, slot, struct, byteOffset } of nested) {
+    const attach = (instance: Internal): Internal => {
+      if (!instance[LIVE]) {
+        throw new TypeError('Struct instance used after recycle(). Call create() for a new one.');
+      }
+      const child = struct![ACQUIRE](instance[VIEW], instance[OFFSET] + byteOffset);
+      child[OWNED] = true;
+      instance[slot] = child;
+      (instance[ATTACHED] as number)++;
+      return child;
+    };
     Object.defineProperty(StructImpl.prototype, key, {
       get(this: Internal) {
-        return this[CHILDREN][i];
+        const child = this[slot];
+        return child !== undefined ? child : attach(this);
       },
       enumerable: true,
     });
-  });
+  }
 
   return StructImpl as unknown as StructClass<S>;
 }
