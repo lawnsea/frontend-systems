@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --dir src",
-    "bench": "pnpm build && node bench/access.js"
+    "bench": "pnpm build && node bench/run.js"
   },
   "devDependencies": {
     "typescript": "^7.0.2",
