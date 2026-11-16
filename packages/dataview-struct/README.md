@@ -101,4 +101,5 @@ Each field has its own accessor on the class prototype. That keeps each call sit
 - `pnpm typecheck` typechecks `src`, including tests.
 - `pnpm test` runs the unit tests with [Vitest](https://vitest.dev/).
 - `pnpm bench` builds the package and runs `bench/access.js`.
+- `node bench/backing.js` compares DataView backing with typed arrays over the same buffer, after checking that every backing writes the same bytes.
 - `node bench/nested.js [dist...]` measures nested structs in fresh processes, comparing builds when given several `dist` directories.
