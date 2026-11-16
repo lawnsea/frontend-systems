@@ -17,6 +17,7 @@ const UNTRUSTED_BODY = markup("untrusted-body.html");
 const STEAL_CONTROL = markup("steal-control.html");
 const POLLUTE = markup("pollute.html");
 const loadOwnDocument = (route: string) => render(markup("load-own-document.html"), { route: JSON.stringify(route) });
+const openProfile = (route: string) => render(markup("open-profile.html"), { route: JSON.stringify(route) });
 
 const FILES = {
   "/untrusted.js": {
@@ -255,6 +256,30 @@ test("untrusted code can't take the control port by replacing built-ins", async 
   example = await start({}, { head: POLLUTE });
   await loadThroughWorker(page);
   await expect.poll(() => piiShown(page)).toBe(true);
+  expect(stolen()).toEqual([]);
+});
+
+test("untrusted code can't redeem the key of a profile page it opens", async ({ page }) => {
+  // Fails: the opener can script the opened page before its key is redeemed.
+  test.fail();
+  example = await start({}, { body: openProfile("read-key") });
+  const opened = page.context().waitForEvent("page");
+  await loadThroughWorker(page);
+  await opened;
+  await expect.poll(() => events().some((e) => /^attacker-opener-(redeem|key-not-found)/.test(e)), { timeout: 10000 }).toBe(true);
+  await page.waitForTimeout(1000);
+  expect(stolen()).toEqual([]);
+});
+
+test("untrusted code can't replace built-ins in a profile page it opens", async ({ page }) => {
+  // Fails: the opener can script the opened page before its key is redeemed.
+  test.fail();
+  example = await start({}, { body: openProfile("pollute") });
+  const opened = page.context().waitForEvent("page");
+  await loadThroughWorker(page);
+  const popup = await opened;
+  await expect.poll(() => piiShown(popup), { timeout: 10000 }).toBe(true);
+  expect(events().some((e) => e.startsWith("attacker-opened-reused-window-"))).toBe(true);
   expect(stolen()).toEqual([]);
 });
 
