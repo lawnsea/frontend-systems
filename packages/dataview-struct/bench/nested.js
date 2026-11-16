@@ -1,7 +1,7 @@
 // Measures structs with nested fields: access latency, create/recycle cost, retained memory, and
 // garbage. Each case runs in a fresh process.
 //
-// Usage: node bench/nested.js [dist directories to compare...]   (defaults to ../dist)
+// Usage: node bench/nested.js [dist directories, or `plain` for plain objects...]   (defaults to ../dist)
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -56,7 +56,66 @@ function gcDuring(fn) {
   return { gcs: statistics.length, gcMs: gcUs / 1000, garbageB: freed / (ROUNDS * COUNT) };
 }
 
+// The same cases with plain objects, which have no backing bytes and no pool. Creating one
+// allocates it, so the create cases keep each object in `sink` until the next round overwrites it.
+// Without that, V8 could remove the allocation entirely.
+function runPlainCase(caseName) {
+  const make = (i) => ({ x: i, y: 0, foo: { a: 0, b: 0 }, fiz: { id: 0, on: false } });
+  const live = () => Array.from({ length: COUNT }, (_, i) => make(i));
+  const sink = new Array(COUNT).fill(null);
+  const cases = {
+    scalarAccess() {
+      const things = live();
+      return {
+        ns: time(() => {
+          for (let i = 0; i < COUNT; i++) {
+            const t = things[i];
+            t.x = t.x + t.y;
+          }
+        }),
+      };
+    },
+    nestedAccess() {
+      const things = live();
+      return {
+        ns: time(() => {
+          for (let i = 0; i < COUNT; i++) {
+            const t = things[i];
+            t.foo.a = t.foo.b + t.fiz.id;
+          }
+        }),
+      };
+    },
+    createUntouched() {
+      const fn = () => {
+        for (let i = 0; i < COUNT; i++) sink[i] = make(i);
+      };
+      return { ns: time(fn), ...gcDuring(fn) };
+    },
+    createTouched() {
+      const fn = () => {
+        for (let i = 0; i < COUNT; i++) {
+          const t = make(i);
+          t.foo.a = i;
+          t.fiz.id = i;
+          sink[i] = t;
+        }
+      };
+      return { ns: time(fn), ...gcDuring(fn) };
+    },
+    newUnpooled() {
+      return cases.createUntouched();
+    },
+    memory() {
+      const bytes = retained(make);
+      return { untouchedB: bytes, touchedB: bytes };
+    },
+  };
+  return cases[caseName]();
+}
+
 async function runCase(caseName, dist) {
+  if (dist === 'plain') return runPlainCase(caseName);
   const { defineStruct, Float32, Uint32, Bool } = await import(pathToFileURL(resolve(dist, 'index.js')).href);
   const Fiz = defineStruct({ id: Uint32, on: Bool }, 'Fiz');
   const Thing = defineStruct({ x: Float32, y: Float32, foo: { a: Float32, b: Float32 }, fiz: Fiz }, 'Thing');
