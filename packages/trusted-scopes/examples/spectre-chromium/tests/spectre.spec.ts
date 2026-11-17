@@ -150,6 +150,59 @@ test("trusted frames run isolated in their own processes", async ({ page }) => {
   expect(await piiFrame.evaluate(() => (self as unknown as { ticks: number }).ticks)).toBeGreaterThan(20);
 });
 
+test("a trusted frame's dedicated worker runs isolated in the frame's process", async ({ page, browser }) => {
+  example = await start();
+  await loadThroughWorker(page);
+  await expect.poll(() => piiShown(page)).toBe(true);
+  const piiFrame = page.frames().find((f) => pathOf(f.url()).length > "/trusted-scopes/pii/".length)!;
+  // The frame is sandboxed, so its worker's script comes from a blob URL with
+  // the frame's opaque origin. Each message makes the worker busy for 1s.
+  const fromWorker = await piiFrame.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const source = `
+          postMessage([self.origin, crossOriginIsolated]);
+          onmessage = () => { const end = Date.now() + 1000; while (Date.now() < end); postMessage("done"); };`;
+        const worker = new Worker(URL.createObjectURL(new Blob([source], { type: "text/javascript" })));
+        (self as unknown as { worker: Worker }).worker = worker;
+        worker.onmessage = (m) => resolve(m.data);
+      }),
+  );
+  expect(fromWorker).toEqual(["null", true]);
+
+  // CDP doesn't map frames or workers to processes, so find the renderer process
+  // whose CPU time grows most while each is busy.
+  const cdp = await browser.newBrowserCDPSession();
+  const cpuTimes = async () => {
+    const { processInfo } = await cdp.send("SystemInfo.getProcessInfo");
+    return new Map(processInfo.filter((p) => p.type === "renderer").map((p) => [p.id, p.cpuTime]));
+  };
+  const busiest = async (busy: () => Promise<unknown>) => {
+    const before = await cpuTimes();
+    await busy();
+    const deltas = [...(await cpuTimes())].map(([id, time]) => [id, time - (before.get(id) ?? 0)] as const);
+    const [id, delta] = deltas.reduce((a, b) => (b[1] > a[1] ? b : a));
+    expect(delta).toBeGreaterThan(0.5);
+    return id;
+  };
+  const spin = () => {
+    const end = Date.now() + 1000;
+    while (Date.now() < end);
+  };
+  const workerProcess = await busiest(() =>
+    piiFrame.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const { worker } = self as unknown as { worker: Worker };
+          worker.onmessage = resolve;
+          worker.postMessage(null);
+        }),
+    ),
+  );
+  expect(workerProcess).toBe(await busiest(() => piiFrame.evaluate(spin)));
+  expect(workerProcess).not.toBe(await busiest(() => page.evaluate(spin)));
+});
+
 test("the page has only the PII's ciphertext", async ({ page }) => {
   example = await start();
   await loadThroughWorker(page);
