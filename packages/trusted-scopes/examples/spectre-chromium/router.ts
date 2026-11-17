@@ -5,15 +5,16 @@
 // example at http://localhost:5176/profile.
 import { fork, type ChildProcess } from "node:child_process";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
-import { headScript } from "./head.ts";
 import type { Request, Response } from "./ipc.ts";
 import type { ProfileOptions } from "./profile-server.ts";
 import { render, template, workerSource } from "./templates.ts";
 
 const CONTROLLER_SW = workerSource("controller-sw.js", ["controller-frame.html"]);
 const PAGE = template("page.html");
+const HEAD_SCRIPT = readFileSync(new URL("./head.js", import.meta.url), "utf8");
 
 // The trusted server for each scope.
 const SCOPE_SERVERS: Record<string, string> = { pii: "pii-server.ts" };
@@ -139,7 +140,7 @@ export async function startExample(port: number, opts: Options = {}): Promise<Ex
         },
         // The head script and the parser-blocking script come first, so they run
         // before any of the profile page's markup is parsed.
-        body: render(PAGE, { headScript: headScript(psk), psk, timeout: String(timeout), head: content.head, body: content.body }),
+        body: render(PAGE, { headScript: render(HEAD_SCRIPT, { psk: JSON.stringify(psk) }), psk, timeout: String(timeout), head: content.head, body: content.body }),
       };
     }
 

@@ -1,8 +1,12 @@
-// The trusted script the router injects into the head of the profile page that runs before untrusted code
-export function headScript(psk: string): string {
-  // An IIFE keeps the script's bindings out of the global scope that all scripts
-  // share, so untrusted code can't read or replace them.
-  return `(() => {
+// The trusted script the router injects into the head of the profile page that
+// runs before untrusted code. The router replaces {{psk}} with the page's key as
+// a string literal.
+
+// An IIFE keeps the script's bindings out of the global scope that all scripts
+// share, so untrusted code can't read or replace them.
+(() => {
+  const PSK = {{psk}};
+
   // Code that can run after untrusted code uses these instead of the page's globals.
   const trustedGlobals = captureTrustedGlobals();
 
@@ -19,7 +23,7 @@ export function headScript(psk: string): string {
   const controller = navigator.serviceWorker.controller;
   if (controller?.scriptURL !== new URL("/sw.js", location.href).href) {
     const xhr = new XMLHttpRequest();
-    xhr.open("DELETE", "/psk/${psk}", false);
+    xhr.open("DELETE", "/psk/" + PSK, false);
     xhr.send();
     // If the page load was not controlled by any service worker, install the controller worker and reload the page
     if (!controller) {
@@ -31,7 +35,7 @@ export function headScript(psk: string): string {
   }
 
   const controllerFrame = document.createElement("iframe");
-  controllerFrame.src = "/controller-frame?psk=${psk}";
+  controllerFrame.src = "/controller-frame?psk=" + PSK;
   controllerFrame.hidden = true;
 
   // The head script's end of the message channel that connects it to the controller frame
@@ -80,7 +84,7 @@ export function headScript(psk: string): string {
     // Only a document a trusted worker serves can post from this frame with origin
     // "null", so a different path means the frame loaded the wrong one.
     if (reported !== expected.path) {
-      throw new trustedGlobals.Error(\`A trusted frame's document was served at \${reported}, not \${expected.path}, so it isn't connected.\`);
+      throw new trustedGlobals.Error(`A trusted frame's document was served at ${reported}, not ${expected.path}, so it isn't connected.`);
     }
     expected.connect(e.ports);
   }, true);
@@ -98,13 +102,13 @@ export function headScript(psk: string): string {
   const createScope = (scope) =>
     new trustedGlobals.Promise((resolve, reject) => {
       if (typeof scope !== "string" || !trustedGlobals.isScopeName(scope)) {
-        return reject(new trustedGlobals.Error(\`"\${scope}" isn't a valid scope name: use lowercase letters, digits, and hyphens.\`));
+        return reject(new trustedGlobals.Error(`"${scope}" isn't a valid scope name: use lowercase letters, digits, and hyphens.`));
       }
-      if (scopes.has(scope)) return reject(new trustedGlobals.Error(\`The "\${scope}" scope already exists; use trustedScopes.scopes["\${scope}"].\`));
+      if (scopes.has(scope)) return reject(new trustedGlobals.Error(`The "${scope}" scope already exists; use trustedScopes.scopes["${scope}"].`));
       if (!control) return reject(new trustedGlobals.Error("The controller frame isn't connected, so no scope can be created."));
       scopes.set(scope, null);
-      const root = \`/trusted-scopes/\${scope}/\`;
-      trustedGlobals.serviceWorker.register(\`\${root}sw.js\`, root, (worker) => {
+      const root = `/trusted-scopes/${scope}/`;
+      trustedGlobals.serviceWorker.register(`${root}sw.js`, root, (worker) => {
         const scopeFrame = addFrame(root, (ports) => {
           const toController = ports[0];
           const toWorker = ports[1];
@@ -117,7 +121,7 @@ export function headScript(psk: string): string {
             // Create a new trusted frame from a scope-relative path
             createFrame: (path) => {
               if (typeof path !== "string" || !trustedGlobals.isScopePath(path)) {
-                throw new trustedGlobals.Error(\`"\${path}" isn't a valid frame path: use segments like "/name".\`);
+                throw new trustedGlobals.Error(`"${path}" isn't a valid frame path: use segments like "/name".`);
               }
               return addFrame(root + path.slice(1), (framePorts) => {
                 trustedGlobals.port(toScope).postMessage({ __proto__: null, path }, [framePorts[0]]);
@@ -131,7 +135,7 @@ export function headScript(psk: string): string {
               resolve(trustedScope);
             } else if (data === "failed") {
               scopes.delete(scope);
-              reject(new trustedGlobals.Error(\`The router has no "\${scope}" scope, or refused to sign for it.\`));
+              reject(new trustedGlobals.Error(`The router has no "${scope}" scope, or refused to sign for it.`));
             }
           };
         });
@@ -170,7 +174,7 @@ export function headScript(psk: string): string {
     const then = Promise.prototype.then;
     const test = RegExp.prototype.test;
     const scopeName = /^[a-z0-9-]+$/;
-    const scopePath = /^(\\/[A-Za-z0-9_-]+)+$/;
+    const scopePath = /^(\/[A-Za-z0-9_-]+)+$/;
     const { delete: mapDelete, forEach: mapForEach, get: mapGet, has: mapHas, set: mapSet } = Map.prototype;
     const createElement = Document.prototype.createElement;
     const documentElement = accessor(Document.prototype, "documentElement").get;
@@ -310,5 +314,4 @@ export function headScript(psk: string): string {
       }),
     });
   }
-})();`;
-}
+})();

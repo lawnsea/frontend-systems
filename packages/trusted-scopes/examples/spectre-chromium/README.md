@@ -27,7 +27,7 @@ Each runs in its own process.
   - `/trusted-scopes/pii/session-key`, the session's key, for requests the router forwards signed.
 - `profile-server.ts`, the untrusted profile server, renders the profile page's head and body content, with the encrypted PII.
 
-The profile server returns the page's head and body content. The router wraps them in a document whose head starts with the trusted head script (`head.ts`) and a parser-blocking `<script src="/controller-frame-ready">`. It sends `Content-Security-Policy: frame-src <origin>/controller-frame <origin>/trusted-scopes/; require-trusted-types-for 'script'; trusted-types default`.
+The profile server returns the page's head and body content. The router wraps them in a document whose head starts with the trusted head script (`head.js`) and a parser-blocking `<script src="/controller-frame-ready">`. It sends `Content-Security-Policy: frame-src <origin>/controller-frame <origin>/trusted-scopes/; require-trusted-types-for 'script'; trusted-types default`.
 
 ## Head script
 
