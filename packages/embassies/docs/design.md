@@ -109,6 +109,9 @@ A [credentialless iframe](https://developer.mozilla.org/en-US/docs/Web/Security/
 - Every credentialless frame under one top-level document shares one ephemeral partition: `localStorage`, IndexedDB, cookies and `BroadcastChannel`. Nesting and Document-Isolation-Policy don't change that. A new top-level document gets a new partition.
 - A credentialless frame can register a service worker in that partition. It then handles the navigations of later credentialless frames on the page, so it could serve another app's container any document.
 - Same-origin frames with Document-Isolation-Policy share one process, credentialless or not, so Spectre could read across apps. Sandboxed frames, each with its own opaque origin, each get their own.
+- Serving the app's worker with CSP `sandbox` doesn't help. The worker gets an opaque origin, so it loses `crypto.subtle` again, but it stays in its frame's shared process, and still shares `BroadcastChannel` with the other frames' workers.
+
+Today's containers have neither problem: apps can't reach each other through `BroadcastChannel`, IndexedDB, the Cache API or Web Locks (`tests/container.spec.ts`).
 
 ### Smaller changes
 

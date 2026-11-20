@@ -73,6 +73,32 @@ const SPIN_WORKER = `
   postMessage(crossOriginIsolated);
   onmessage = () => { const end = Date.now() + 1000; while (Date.now() < end); postMessage("done"); };`;
 
+// Served with CSP sandbox. Reports what it is, spins for 1s on "spin", writes a
+// value to BroadcastChannel and IndexedDB on "write", and reports what it has
+// heard and read on "read".
+const SANDBOXED_WORKER = `
+  const heard = [];
+  const info = { origin: self.origin, secure: isSecureContext, subtle: !!crypto.subtle, coi: crossOriginIsolated };
+  try { new BroadcastChannel("w").onmessage = (e) => heard.push(e.data); } catch (e) { info.broadcastError = e.name; }
+  const store = (mode, op) => new Promise((resolve, reject) => {
+    const request = indexedDB.open("w", 1);
+    request.onupgradeneeded = () => request.result.createObjectStore("s");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => { const r = op(request.result.transaction("s", mode).objectStore("s")); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); };
+  });
+  postMessage(info);
+  onmessage = async ({ data }) => {
+    if (data === "spin") { const end = Date.now() + 1000; while (Date.now() < end); return postMessage("done"); }
+    if (data.write) {
+      try { new BroadcastChannel("w").postMessage(data.write); } catch {}
+      try { await store("readwrite", (s) => s.put(data.write, "k")); } catch {}
+      return postMessage("written");
+    }
+    let stored;
+    try { stored = await store("readonly", (s) => s.get("k")); } catch (e) { stored = "error " + e.name; }
+    postMessage({ heard, stored });
+  };`;
+
 let server: Server;
 let origin: string;
 let log: string[];
@@ -87,7 +113,8 @@ test.beforeEach(async () => {
     const headers: Record<string, string> = { "Content-Type": "text/html", "Cache-Control": "no-store" };
     if (url.pathname === "/frame" && url.searchParams.has("dip")) headers["Document-Isolation-Policy"] = "isolate-and-credentialless";
     if (url.pathname.endsWith(".js")) headers["Content-Type"] = "text/javascript";
-    const body = { "/top": TOP, "/frame": FRAME, "/sw.js": SERVICE_WORKER, "/spin.js": SPIN_WORKER }[url.pathname];
+    if (url.pathname === "/sandboxed.js") headers["Content-Security-Policy"] = "sandbox";
+    const body = { "/top": TOP, "/frame": FRAME, "/sw.js": SERVICE_WORKER, "/spin.js": SPIN_WORKER, "/sandboxed.js": SANDBOXED_WORKER }[url.pathname];
     res.writeHead(body ? 200 : 404, headers).end(body ?? "");
   });
   await new Promise<void>((resolve) => server.listen(0, "localhost", resolve));
@@ -305,4 +332,62 @@ test.describe("processes", () => {
     const { pageProcess, workers } = await processes(page, browser, frames, { blob: true });
     expect(new Set([pageProcess, ...workers]).size).toBe(4);
   });
+});
+
+test.describe("workers served with CSP sandbox", () => {
+  // Starts /sandboxed.js in each frame and returns what each reports.
+  const start = (frame: Frame) =>
+    frame.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const worker = new Worker("/sandboxed.js");
+          (self as any).worker = worker;
+          worker.onmessage = (m) => resolve(m.data);
+          worker.onerror = (e) => resolve({ error: e.message ?? "error" });
+        }),
+    );
+  const ask = (frame: Frame, message: unknown) =>
+    frame.evaluate(
+      (message) =>
+        new Promise((resolve) => {
+          const { worker } = self as any;
+          worker.onmessage = (m: MessageEvent) => resolve(m.data);
+          worker.postMessage(message);
+        }),
+      message,
+    );
+
+  // The worker gets an opaque origin, so it's no secure context and can't use
+  // IndexedDB. It still runs in its frame's process, and still shares
+  // BroadcastChannel with the other frames' workers.
+  for (const credentialless of [true, false]) {
+    test(`in same-origin ${credentialless ? "credentialless" : "ordinary"} frames with DIP, one runs in its frame's shared process`, async ({ page, browser }) => {
+      await open(page);
+      const frames: Frame[] = [];
+      for (const name of ["a", "b", "c"]) frames.push(await addFrame(page, name, { dip: true, credentialless }));
+      for (const frame of frames) expect(await start(frame)).toEqual({ origin: "null", secure: false, subtle: false, coi: true });
+
+      await ask(frames[0], { write: "from-a" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(await ask(frames[1], "read")).toEqual({ heard: ["from-a"], stored: "error SecurityError" });
+
+      const busiest = await processMeter(browser);
+      const pageProcess = await busiest(() =>
+        page.evaluate(() => {
+          const end = Date.now() + 1000;
+          while (Date.now() < end);
+        }),
+      );
+      const workers = [];
+      for (const frame of frames) workers.push(await busiest(() => ask(frame, "spin")));
+      const frameProcess = await busiest(() =>
+        frames[0].evaluate(() => {
+          const end = Date.now() + 1000;
+          while (Date.now() < end);
+        }),
+      );
+      expect(new Set(workers)).toEqual(new Set([frameProcess]));
+      expect(frameProcess).not.toBe(pageProcess);
+    });
+  }
 });

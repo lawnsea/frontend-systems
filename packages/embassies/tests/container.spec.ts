@@ -49,6 +49,48 @@ test("an app can't use the network except through the kernel", async ({ page }) 
   expect(example.requests.filter((r) => !r.includes("/.well-known/"))).toEqual(["news /echo cookie="]);
 });
 
+test("apps can't reach each other through BroadcastChannel or storage", async ({ page }) => {
+  const probe = await boot(page, example, "probe");
+  const probe2 = await startFrom(probe, page, example, "probe2");
+  await probe2.evaluate(() => {
+    (self as any).heard = [];
+    new BroadcastChannel("apps").onmessage = (e) => (self as any).heard.push(e.data);
+  });
+  const { ownChannel, ...storage } = await probe.evaluate(async () => {
+    // Another channel in the sender's own worker hears it, so delivery works.
+    const own = new Promise((resolve) => {
+      new BroadcastChannel("apps").onmessage = (e) => resolve(e.data);
+      setTimeout(() => resolve(null), 1000);
+    });
+    new BroadcastChannel("apps").postMessage("hello");
+    const blocked = async (f: () => unknown) => {
+      try {
+        await f();
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    return {
+      indexedDB: await blocked(
+        () =>
+          new Promise((resolve, reject) => {
+            const request = indexedDB.open("apps");
+            request.onsuccess = resolve;
+            request.onerror = () => reject(request.error);
+          }),
+      ),
+      caches: await blocked(() => caches.open("apps")),
+      locks: await blocked(() => navigator.locks.request("apps", () => {})),
+      ownChannel: await own,
+    };
+  });
+  expect(ownChannel).toBe("hello");
+  expect(storage).toEqual({ indexedDB: true, caches: true, locks: true });
+  await page.waitForTimeout(300);
+  expect(await probe2.evaluate(() => (self as any).heard)).toEqual([]);
+});
+
 test("an app can compile WebAssembly but can't eval", async ({ page }) => {
   const probe = await boot(page, example, "probe");
   const result = await probe.evaluate(async () => {
