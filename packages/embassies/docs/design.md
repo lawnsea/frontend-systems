@@ -102,6 +102,13 @@ Chromium doesn't treat a worker from a `blob:null` URL as a [secure context](htt
 
 Embassies leaves crypto to apps. The relay isn't a CEI call; the kernel never sees it.
 
+#### Why containers aren't credentialless frames
+
+A [credentialless iframe](https://developer.mozilla.org/en-US/docs/Web/Security/IFrame_credentialless) at a kernel URL would have a real origin, so its worker could load from a URL and be a secure context. In Chromium 156 it would let apps reach each other without the kernel (`tests/credentialless-frame.spec.ts`):
+
+- Every credentialless frame under one top-level document shares one ephemeral partition: `localStorage`, IndexedDB, cookies and `BroadcastChannel`. Nesting and Document-Isolation-Policy don't change that. A new top-level document gets a new partition.
+- A credentialless frame can register a service worker in that partition. It then handles the navigations of later credentialless frames on the page, so it could serve another app's container any document.
+
 ### Smaller changes
 
 - `ifconfig` returns the app's principal, so an app can answer for it in protocols like linking.
