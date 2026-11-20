@@ -1,0 +1,41 @@
+<!doctype html>
+<!-- A container: it runs the boot block its parent, the kernel, sends it in a
+dedicated worker, and gives the worker the app's kernel port. The server serves it
+sandboxed, with Document-Isolation-Policy and a CSP that blocks all network
+access, so the app runs isolated with an opaque origin and no way out but the port.
+
+Chromium doesn't treat a blob:null worker as a secure context, so it has no
+crypto.subtle. This document is one, so it relays SubtleCrypto calls for the
+worker on a second port. -->
+<script nonce="{{nonce}}">
+  addEventListener(
+    "message",
+    (e) => {
+      if (e.source !== parent || !e.ports[0]) return;
+      const worker = new Worker(URL.createObjectURL(new Blob([e.data.boot], { type: "text/javascript" })));
+      const methods = ["encrypt", "decrypt", "sign", "verify", "digest", "generateKey", "deriveKey", "deriveBits", "importKey", "exportKey", "wrapKey", "unwrapKey"];
+      // CryptoKey is exposed only in secure contexts, so the worker can't receive
+      // one. It gets a handle to each key in keys instead.
+      const keys = [];
+      const plain = (v) => typeof v === "object" && v !== null && (Array.isArray(v) || Object.getPrototypeOf(v) === Object.prototype);
+      const map = (v, f) => (Array.isArray(v) ? v.map(f) : Object.fromEntries(Object.entries(v).map(([k, x]) => [k, f(x)])));
+      const toHandles = (v) =>
+        v instanceof CryptoKey
+          ? { cryptoKey: keys.push(v) - 1, type: v.type, algorithm: v.algorithm, extractable: v.extractable, usages: v.usages }
+          : plain(v) ? map(v, toHandles) : v;
+      const toKeys = (v) => (plain(v) ? (Number.isInteger(v.cryptoKey) && keys[v.cryptoKey] ? keys[v.cryptoKey] : map(v, toKeys)) : v);
+      const subtle = new MessageChannel();
+      subtle.port1.onmessage = async ({ data: { id, method, args } }) => {
+        try {
+          if (!methods.includes(method) || !Array.isArray(args)) throw new TypeError(`SubtleCrypto has no method ${method}`);
+          subtle.port1.postMessage({ id, ok: true, result: toHandles(await crypto.subtle[method](...toKeys(args))) });
+        } catch (error) {
+          subtle.port1.postMessage({ id, ok: false, error: `${error.name}: ${error.message}` });
+        }
+      };
+      worker.postMessage(null, [e.ports[0], subtle.port2]);
+    },
+    { once: true },
+  );
+  parent.postMessage("ready", "*");
+</script>
