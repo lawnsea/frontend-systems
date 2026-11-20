@@ -86,10 +86,17 @@ test("transferring a viewport revokes it from its old owner", async ({ page }) =
   await expect(rootLabel(page)).toHaveText(example.label("probe2"));
   await expect.poll(() => pixel(page, AREA.x + 10, AREA.y + 10)).toBe(BLUE);
 
-  // The old owner can't draw, and the deed is spent.
-  expect(await probe.evaluate((viewport) => (self as unknown as ProbeGlobals).probe.paint(viewport, "#ff0000").catch((e: Error) => e.message), viewport)).toBe(
-    `This app doesn't hold viewport ${viewport}`,
-  );
+  // The old owner can't map a canvas or draw, and the deed is spent.
+  const refused = `This app doesn't hold viewport ${viewport}`;
+  expect(await calls(probe, "mapCanvas", viewport)).toEqual({ error: refused });
+  const drawn = await probe.evaluate((viewport) => {
+    const canvas = new OffscreenCanvas(100, 100);
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = "#ff0000";
+    ctx.fillRect(0, 0, 100, 100);
+    return (self as unknown as ProbeGlobals).cei.updateCanvas(viewport, canvas.transferToImageBitmap()).catch((e: Error) => e.message);
+  }, viewport);
+  expect(drawn).toBe(refused);
   expect(await calls(probe, "acceptViewport", deed)).toEqual({ error: "The deed isn't live; it may have been redeemed or revoked" });
   await page.waitForTimeout(100);
   expect(await pixel(page, AREA.x + 10, AREA.y + 10)).toBe(BLUE);
