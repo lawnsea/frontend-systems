@@ -1,11 +1,13 @@
-import { expect, test, type Frame, type Page } from "@playwright/test";
+import { expect, test, type Browser, type Frame, type Page } from "@playwright/test";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { processMeter } from "./helpers.ts";
 
 // How Chromium partitions credentialless iframes: whether one can register a
-// service worker, which frames that worker controls, and which credentialless
-// frames share storage, cookies and BroadcastChannel. These inform whether
-// containers could be credentialless same-origin frames; see docs/design.md.
+// service worker, which frames that worker controls, which credentialless
+// frames share storage, cookies and BroadcastChannel, and which DIP frames share
+// a process. These inform whether containers could be credentialless
+// same-origin frames; see docs/design.md.
 
 // Logs each fetch it handles, and claims clients when it activates.
 const SERVICE_WORKER = `
@@ -19,10 +21,11 @@ const SERVICE_WORKER = `
 
 // A page that adds frames on request: credentialless or not, with or without DIP.
 const TOP = `<!doctype html><body><script>
-  self.addFrame = (name, { credentialless = true, dip = false, path = "/frame", origin = "", parent = document.body } = {}) =>
+  self.addFrame = (name, { credentialless = true, dip = false, sandbox = false, path = "/frame", origin = "", parent = document.body } = {}) =>
     new Promise((resolve) => {
       const frame = document.createElement("iframe");
       frame.credentialless = credentialless;
+      if (sandbox) frame.sandbox = "allow-scripts";
       frame.name = name;
       frame.src = origin + path + "?name=" + name + (dip ? "&dip" : "");
       frame.onload = () => resolve();
@@ -65,6 +68,11 @@ const FRAME = `<!doctype html><body><script>
   });
 </script>`;
 
+// Reports whether it's cross-origin isolated, then spins for 1s per message.
+const SPIN_WORKER = `
+  postMessage(crossOriginIsolated);
+  onmessage = () => { const end = Date.now() + 1000; while (Date.now() < end); postMessage("done"); };`;
+
 let server: Server;
 let origin: string;
 let log: string[];
@@ -78,8 +86,8 @@ test.beforeEach(async () => {
     }
     const headers: Record<string, string> = { "Content-Type": "text/html", "Cache-Control": "no-store" };
     if (url.pathname === "/frame" && url.searchParams.has("dip")) headers["Document-Isolation-Policy"] = "isolate-and-credentialless";
-    if (url.pathname === "/sw.js") headers["Content-Type"] = "text/javascript";
-    const body = { "/top": TOP, "/frame": FRAME, "/sw.js": SERVICE_WORKER }[url.pathname];
+    if (url.pathname.endsWith(".js")) headers["Content-Type"] = "text/javascript";
+    const body = { "/top": TOP, "/frame": FRAME, "/sw.js": SERVICE_WORKER, "/spin.js": SPIN_WORKER }[url.pathname];
     res.writeHead(body ? 200 : 404, headers).end(body ?? "");
   });
   await new Promise<void>((resolve) => server.listen(0, "localhost", resolve));
@@ -91,7 +99,7 @@ const open = async (page: Page) => {
   await page.goto(`${origin}/top`);
   return page;
 };
-type FrameOptions = { credentialless?: boolean; dip?: boolean; path?: string; origin?: string };
+type FrameOptions = { credentialless?: boolean; dip?: boolean; sandbox?: boolean; path?: string; origin?: string };
 const addFrame = async (page: Page, name: string, opts: FrameOptions = {}) => {
   await page.evaluate(([name, opts]) => (self as any).addFrame(name, opts), [name, opts] as const);
   return page.frame({ name })!;
@@ -232,5 +240,69 @@ test.describe("service workers", () => {
         }),
     );
     expect(exposed).toBe(false);
+  });
+});
+
+test.describe("processes", () => {
+  // Starts a worker from a URL in each frame, as an app container would, and
+  // returns the renderer process each worker runs in, and the page's.
+  // A sandboxed frame's origin is opaque, so its worker comes from a blob URL.
+  async function processes(page: Page, browser: Browser, frames: Frame[], { blob = false } = {}) {
+    for (const frame of frames) {
+      const isolated = await frame.evaluate(
+        ([blob, source]) =>
+          new Promise((resolve) => {
+            const url = blob ? URL.createObjectURL(new Blob([source], { type: "text/javascript" })) : "/spin.js";
+            const worker = new Worker(url);
+            (self as any).worker = worker;
+            worker.onmessage = (m) => resolve(m.data);
+          }),
+        [blob, SPIN_WORKER] as const,
+      );
+      expect(isolated).toBe(true);
+    }
+    const busiest = await processMeter(browser);
+    const pageProcess = await busiest(() =>
+      page.evaluate(() => {
+        const end = Date.now() + 1000;
+        while (Date.now() < end);
+      }),
+    );
+    const workers = [];
+    for (const frame of frames) {
+      workers.push(
+        await busiest(() =>
+          frame.evaluate(
+            () =>
+              new Promise((resolve) => {
+                const { worker } = self as any;
+                worker.onmessage = resolve;
+                worker.postMessage(null);
+              }),
+          ),
+        ),
+      );
+    }
+    return { pageProcess, workers };
+  }
+
+  // Chromium appears to give DIP documents a process per origin.
+  for (const credentialless of [true, false]) {
+    test(`same-origin ${credentialless ? "credentialless" : "ordinary"} frames with DIP share one process, apart from the page's`, async ({ page, browser }) => {
+      await open(page);
+      const frames = [];
+      for (const name of ["a", "b", "c"]) frames.push(await addFrame(page, name, { dip: true, credentialless }));
+      const { pageProcess, workers } = await processes(page, browser, frames);
+      expect(new Set(workers).size).toBe(1);
+      expect(workers[0]).not.toBe(pageProcess);
+    });
+  }
+
+  test("sandboxed frames with DIP each get their own process", async ({ page, browser }) => {
+    await open(page);
+    const frames = [];
+    for (const name of ["a", "b", "c"]) frames.push(await addFrame(page, name, { dip: true, credentialless: false, sandbox: true }));
+    const { pageProcess, workers } = await processes(page, browser, frames, { blob: true });
+    expect(new Set([pageProcess, ...workers]).size).toBe(4);
   });
 });
